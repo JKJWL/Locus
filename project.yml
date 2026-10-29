@@ -29,6 +29,10 @@ targets:
         buildPhase: none
       - path: Vendor/idevice/idevice.h
         buildPhase: none
+      - path: Vendor/wgproxy/module.modulemap
+        buildPhase: none
+      - path: Vendor/wgproxy/wgproxy.h
+        buildPhase: none
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.chrismack.locus
@@ -45,18 +49,31 @@ targets:
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
           - "$(PROJECT_DIR)/Vendor/idevice"
+          - "$(PROJECT_DIR)/Vendor/wgproxy"
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-lidevice_ffi"
+          - "-lwgproxy"
           - "-lc++"
           - "-lz"
+          - "-lresolv"
+          - "-framework Security"
+          - "-framework CoreFoundation"
         OTHER_LDFLAGS[sdk=iphoneos*]:
           - "$(inherited)"
           - "-lidevice_ffi"
+          - "-lwgproxy"
           - "-lc++"
           - "-lz"
-        SWIFT_INCLUDE_PATHS: "$(PROJECT_DIR)/Vendor/idevice"
-        HEADER_SEARCH_PATHS: "$(PROJECT_DIR)/Vendor/idevice"
+          - "-lresolv"
+          - "-framework Security"
+          - "-framework CoreFoundation"
+        SWIFT_INCLUDE_PATHS:
+          - "$(PROJECT_DIR)/Vendor/idevice"
+          - "$(PROJECT_DIR)/Vendor/wgproxy"
+        HEADER_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/Vendor/idevice"
+          - "$(PROJECT_DIR)/Vendor/wgproxy"
         ENABLE_BITCODE: NO
         SUPPORTS_MACCATALYST: NO
         SWIFT_OBJC_BRIDGING_HEADER: ""
