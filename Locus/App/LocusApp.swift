@@ -8,6 +8,7 @@ struct LocusApp: App {
 
     init() {
         IdeviceLog.start()
+        IPMask.shared.resumeAtLaunch()
     }
 
     /// Map when setup finished, or when already paired outside this walkthrough.
