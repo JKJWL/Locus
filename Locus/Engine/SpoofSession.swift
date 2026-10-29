@@ -288,6 +288,11 @@ final class SpoofSession: ObservableObject {
     }
 
     private func apply(_ coordinate: CLLocationCoordinate2D, pairing: PairingStore, markRecent: Bool) {
+        if let issue = LocalDevVPN.configurationIssue {
+            lastError = issue
+            if simulated == nil { status = .idle }
+            return
+        }
         if status == .idle || status.isDropped {
             status = .connecting
         }
