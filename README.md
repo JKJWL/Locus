@@ -60,6 +60,11 @@ Locus is for system-level teleporting. It isn’t a Pokémon GO client or an ant
 
 Building from source needs an Apple Developer account (free or paid) for code signing. The published IPA does **not** — just sideload it.
 
+**No Mac?** Every push runs the **Build IPA** GitHub Actions workflow on a macOS runner, which builds idevice from source and produces an unsigned `Locus.ipa` (download it from the run's artifacts and sideload it).
+
+The idevice library is built from upstream source at the commit pinned in `Vendor/idevice/UPSTREAM_COMMIT`; it is no longer checked in.
+
+0. Install [rustup](https://rustup.rs), then run `scripts/build-idevice.sh` to build `Vendor/idevice/libidevice_ffi.a` + `idevice.h`.
 1. Install [XcodeGen](https://github.com/yonaskolb/XcodeGen) if needed: `brew install xcodegen`
 2. Set your **Team ID** in `project.yml` (`DEVELOPMENT_TEAM`), *or* pick your team under Xcode → Signing & Capabilities after generating the project.
 3. Generate and open:

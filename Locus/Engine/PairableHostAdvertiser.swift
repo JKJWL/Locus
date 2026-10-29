@@ -4,34 +4,26 @@ import Network
 /// Public-facing pairable-host listener.
 ///
 /// Uses Network.framework `NWListener` + Bonjour (what iOS 27 Developer Mode
-/// browses). Inbound connections are relayed to the Rust pairable-host on
-/// 127.0.0.1 so accept() still completes while Settings is in the foreground.
+/// browses). Inbound connections are relayed to a loopback socket on
+/// 127.0.0.1 whose accepted fd is handed to idevice's `pairable_host_accept_fd`,
+/// so accept() still completes while Settings is in the foreground.
 final class PairableHostAdvertiser {
     private var listener: NWListener?
     private var activeRelay: RelayPipe?
     private(set) var publishedPort: UInt16 = 0
     private var rustLoopbackPort: UInt16 = 0
 
-    func publish(
-        port: UInt16,
-        serviceIdentifier: String,
-        name: String,
-        model: String,
-        authTag: String,
-        ver: String,
-        minVer: String
-    ) {
+    /// - Parameters:
+    ///   - port: loopback port the pairing socket is listening on.
+    ///   - txtRecords: TXT records from `pairable_host_prepare`, published verbatim.
+    func publish(port: UInt16, serviceIdentifier: String, txtRecords: [String: String]) {
         stop()
         rustLoopbackPort = port
 
         var txt = NWTXTRecord()
-        txt["name"] = name
-        txt["identifier"] = serviceIdentifier
-        txt["authTag"] = authTag
-        txt["model"] = model
-        txt["flags"] = "1"
-        txt["ver"] = ver
-        txt["minVer"] = minVer
+        for (key, value) in txtRecords {
+            txt[key] = value
+        }
 
         do {
             let parameters = NWParameters.tcp

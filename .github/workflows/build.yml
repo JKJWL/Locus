@@ -1,0 +1,83 @@
+name: Build IPA
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      idevice_ref:
+        description: "idevice commit/branch to build (default: Vendor/idevice/UPSTREAM_COMMIT)"
+        required: false
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      IDEVICE_SRC: ${{ github.workspace }}/Vendor/idevice-build/idevice
+      IDEVICE_REF: ${{ github.event.inputs.idevice_ref }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          rustup --version
+          cargo --version
+
+      - name: Cache cargo + idevice build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Vendor/idevice-build
+          key: idevice-${{ runner.os }}-${{ hashFiles('Vendor/idevice/UPSTREAM_COMMIT') }}-${{ github.event.inputs.idevice_ref }}
+          restore-keys: idevice-${{ runner.os }}-
+
+      - name: Build idevice FFI for iOS
+        run: bash scripts/build-idevice.sh
+
+      - name: Install XcodeGen + ldid
+        run: brew install xcodegen ldid
+
+      - name: Build Locus (unsigned)
+        run: |
+          xcodegen generate
+          mkdir -p build
+          xcodebuild -project Locus.xcodeproj -scheme Locus -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build > build/xcodebuild.log 2>&1 || {
+              grep -E 'error:' build/xcodebuild.log | sort -u | head -50
+              tail -30 build/xcodebuild.log
+              exit 1
+            }
+          tail -3 build/xcodebuild.log
+
+      - name: Package IPA
+        run: |
+          APP=build/Build/Products/Release-iphoneos/Locus.app
+          # Fake-sign with entitlements so sideloaders (SideStore etc.) carry them over.
+          ldid -SLocus/Resources/Locus.entitlements "$APP/Locus"
+          mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          (cd out && zip -qry Locus.ipa Payload)
+          cp Vendor/idevice/BUILT_COMMIT out/idevice-commit.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Locus-ipa
+          path: |
+            out/Locus.ipa
+            out/idevice-commit.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-logs
+          path: |
+            build/xcodebuild.log
+            Vendor/idevice/idevice.h
+          if-no-files-found: ignore
