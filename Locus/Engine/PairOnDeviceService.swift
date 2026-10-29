@@ -111,7 +111,10 @@ final class PairOnDeviceService: ObservableObject {
     fileprivate func handleSuccess() {
         pin = nil
         phase = .succeeded
-        teardown()
+        // Don't cancel the relay: the device may still be receiving M6.
+        callbackBox.cancel()
+        advertiser.stopListening()
+        endKeepAlive()
         Self.postPlainNotification(
             title: "Locus paired",
             body: "RPPairing is ready. Connect LocalDevVPN, then teleport."
