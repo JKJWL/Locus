@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var showPairOnDevice = false
     @State private var showNameEasterEgg = false
     @State private var tunnelIP = TunnelConfig.targetIP
+    @State private var localTunnelIP = TunnelConfig.tunnelIP ?? ""
     @State private var localDevVPNInstalled = LocalDevVPN.isInstalled
     @Environment(\.scenePhase) private var scenePhase
 
@@ -65,19 +66,32 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    TextField("Device tunnel IP", text: $tunnelIP)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .onSubmit {
-                            TunnelConfig.setTargetIP(tunnelIP)
-                        }
+                    LabeledContent("Device IP") {
+                        TextField("10.7.0.1", text: $tunnelIP)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.numbersAndPunctuation)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .onSubmit(saveTunnelAddresses)
+                    }
+                    LabeledContent("Tunnel IP") {
+                        TextField("Auto", text: $localTunnelIP)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.numbersAndPunctuation)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .onSubmit(saveTunnelAddresses)
+                    }
                     LabeledContent("Status") {
                         Text(LocalDevVPN.isConnected ? "Connected" : "Not connected")
                             .foregroundStyle(LocalDevVPN.isConnected ? LocusTheme.statusGood : LocusTheme.statusWarn)
                     }
-                    Button("Save tunnel IP") {
-                        TunnelConfig.setTargetIP(tunnelIP)
+                    if let issue = LocalDevVPN.configurationIssue {
+                        Text(issue)
+                            .font(.footnote)
+                            .foregroundStyle(LocusTheme.statusWarn)
                     }
+                    Button("Save addresses", action: saveTunnelAddresses)
                     Button {
                         if localDevVPNInstalled {
                             LocalDevVPN.openInstalled()
@@ -93,7 +107,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Tunnel")
                 } footer: {
-                    Text("Connect LocalDevVPN before teleporting. Default tunnel IP is 10.7.0.1. Start a spoof on Wi‑Fi first; it can keep working on cellular afterward.")
+                    Text("Copy both from LocalDevVPN (the /32 suffix is fine). Device IP is where Locus connects (default 10.7.0.1); Tunnel IP is only used to check LocalDevVPN is up — leave it empty to auto-detect. The pairing file has no addresses, so changing these never needs a re-pair. Start a spoof on Wi‑Fi first; it can keep working on cellular afterward.")
                 }
 
                 Section("Privacy") {
@@ -130,7 +144,7 @@ struct SettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") {
-                        TunnelConfig.setTargetIP(tunnelIP)
+                        saveTunnelAddresses()
                         dismiss()
                     }
                 }
@@ -165,6 +179,13 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private func saveTunnelAddresses() {
+        tunnelIP = TunnelConfig.normalized(tunnelIP)
+        localTunnelIP = TunnelConfig.normalized(localTunnelIP)
+        TunnelConfig.setTargetIP(tunnelIP)
+        TunnelConfig.setTunnelIP(localTunnelIP)
     }
 }
 

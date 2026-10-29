@@ -72,6 +72,13 @@ final class PairableHostAdvertiser {
     func stop() {
         activeRelay?.cancel()
         activeRelay = nil
+        stopListening()
+    }
+
+    /// Stops advertising but lets an in-flight relay drain. After pairing succeeds,
+    /// the final pair-setup message (M6) may still be in the pipe; cancelling the
+    /// relay then drops it and the device never stores the pairing.
+    func stopListening() {
         listener?.cancel()
         listener = nil
     }
@@ -100,6 +107,8 @@ private final class RelayPipe {
     private let inbound: NWConnection
     private let outbound: NWConnection
     private let queue = DispatchQueue(label: "locus.pairable.relay")
+    /// Set once the Rust side closes; the device then gets EOF and closes on its own.
+    private var drainingToDevice = false
 
     init(inbound: NWConnection, outbound: NWConnection) {
         self.inbound = inbound
@@ -122,7 +131,8 @@ private final class RelayPipe {
                 NSLog("[Locus] relay to Rust failed: %@", String(describing: error))
                 self.cancel()
             case .cancelled:
-                self.cancel()
+                // Host side gone; keep the device leg open until it drains.
+                self.finishToDevice()
             default:
                 break
             }
@@ -141,10 +151,15 @@ private final class RelayPipe {
             guard let self else { return }
             if let error {
                 NSLog("[Locus] relay receive error: %@", String(describing: error))
-                self.cancel()
+                if from === self.outbound {
+                    self.finishToDevice()
+                } else {
+                    self.cancel()
+                }
                 return
             }
             if let data, !data.isEmpty {
+                NSLog("[Locus] relay %@ %d bytes", from === self.inbound ? "device→host" : "host→device", data.count)
                 to.send(content: data, completion: .contentProcessed { sendError in
                     if let sendError {
                         NSLog("[Locus] relay send error: %@", String(describing: sendError))
@@ -152,16 +167,37 @@ private final class RelayPipe {
                         return
                     }
                     if isComplete {
-                        self.cancel()
+                        self.finish(from: from)
                     } else {
                         self.pump(from: from, to: to)
                     }
                 })
             } else if isComplete {
-                self.cancel()
+                self.finish(from: from)
             } else {
                 self.pump(from: from, to: to)
             }
+        }
+    }
+
+    private func finish(from: NWConnection) {
+        if from === outbound {
+            finishToDevice()
+        } else {
+            NSLog("[Locus] relay: device closed")
+            cancel()
+        }
+    }
+
+    /// Host side finished (pairing done or failed): half-close toward the device so
+    /// everything already sent (incl. M6) is delivered, then let the device hang up.
+    private func finishToDevice() {
+        guard !drainingToDevice else { return }
+        drainingToDevice = true
+        NSLog("[Locus] relay: host closed, draining to device")
+        inbound.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in })
+        queue.asyncAfter(deadline: .now() + 30) { [weak self] in
+            self?.cancel()
         }
     }
 }
