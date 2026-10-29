@@ -174,7 +174,7 @@ final class PairOnDeviceService: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
 
-    private static func runBlockingAccept(outputPath: String, box: PairCallbackBox) {
+    nonisolated private static func runBlockingAccept(outputPath: String, box: PairCallbackBox) {
         let name = "Locus"
         let model = "Mac17,7"
 
@@ -287,13 +287,13 @@ final class PairOnDeviceService: ObservableObject {
     }
 
     /// Reports a failure unless the attempt was cancelled (reset / new attempt).
-    private static func fail(_ box: PairCallbackBox, _ message: String) {
+    nonisolated private static func fail(_ box: PairCallbackBox, _ message: String) {
         guard !box.isCancelled else { return }
         DispatchQueue.main.async { box.owner?.handleFailure(message) }
     }
 
     /// Reads and frees an idevice error.
-    private static func errorMessage(_ err: UnsafeMutablePointer<IdeviceFfiError>, fallback: String) -> String {
+    nonisolated private static func errorMessage(_ err: UnsafeMutablePointer<IdeviceFfiError>, fallback: String) -> String {
         defer { idevice_error_free(err) }
         if let cMessage = err.pointee.message {
             return String(cString: cMessage)
@@ -302,7 +302,7 @@ final class PairOnDeviceService: ObservableObject {
     }
 
     /// `pairable_host_prepare` returns TXT records as an XML plist dictionary.
-    private static func parseTXTRecords(_ data: Data) -> [String: String] {
+    nonisolated private static func parseTXTRecords(_ data: Data) -> [String: String] {
         let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
         return (plist as? [String: String]) ?? [:]
     }
