@@ -8,3 +8,7 @@ Vendor/idevice-build/
 outputs/
 *.ipa
 Payload/
+# Built by scripts/build-idevice.sh (CI does this automatically)
+Vendor/idevice/libidevice_ffi.a
+Vendor/idevice/idevice.h
+Vendor/idevice/BUILT_COMMIT
