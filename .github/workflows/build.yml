@@ -39,6 +39,14 @@ jobs:
       - name: Build idevice FFI for iOS
         run: bash scripts/build-idevice.sh
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: Vendor/wgproxy-src/go.mod
+
+      - name: Build WireGuard proxy for iOS
+        run: bash scripts/build-wgproxy.sh
+
       - name: Install XcodeGen + ldid
         run: brew install xcodegen ldid
 
@@ -80,4 +88,5 @@ jobs:
           path: |
             build/xcodebuild.log
             Vendor/idevice/idevice.h
+            Vendor/wgproxy-src/go.sum
           if-no-files-found: ignore

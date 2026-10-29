@@ -312,6 +312,7 @@ final class SpoofSession: ObservableObject {
             lastError = nil
             beginBackground()
             locationKeeper.start()
+            IPMask.shared.follow(coordinate)
             startResend(pairing: pairing)
             startHealth(pairing: pairing)
             if markRecent {

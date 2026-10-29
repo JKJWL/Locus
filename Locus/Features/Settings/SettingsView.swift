@@ -11,6 +11,9 @@ struct SettingsView: View {
     @State private var showNameEasterEgg = false
     @State private var tunnelIP = TunnelConfig.targetIP
     @State private var localTunnelIP = TunnelConfig.tunnelIP ?? ""
+    @ObservedObject private var ipMask = IPMask.shared
+    @State private var mullvadAccount = ""
+    @State private var mullvadError: String?
     @State private var localDevVPNInstalled = LocalDevVPN.isInstalled
     @Environment(\.scenePhase) private var scenePhase
 
@@ -110,8 +113,66 @@ struct SettingsView: View {
                     Text("Copy both from LocalDevVPN (the /32 suffix is fine). Device IP is where Locus connects (default 10.7.0.1); Tunnel IP is only used to check LocalDevVPN is up — leave it empty to auto-detect. The pairing file has no addresses, so changing these never needs a re-pair. Start a spoof on Wi‑Fi first; it can keep working on cellular afterward.")
                 }
 
+                Section {
+                    if ipMask.isLoggedIn {
+                        LabeledContent("Account", value: ipMask.maskedAccount ?? "")
+                        if let name = ipMask.deviceName {
+                            LabeledContent("Device", value: name)
+                        }
+                        Toggle("Match IP to spoofed location", isOn: Binding(
+                            get: { ipMask.enabled },
+                            set: { ipMask.setEnabled($0, near: session.simulated ?? session.realCoordinate) }
+                        ))
+                        LabeledContent("Status") {
+                            Text(ipMaskStatus)
+                                .foregroundStyle(ipMaskColor)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        if let choice = ipMask.choice {
+                            LabeledContent("Server", value: "\(choice.city) · \(choice.hostname)")
+                        }
+                        LabeledContent("Proxy", value: "127.0.0.1:\(IPMask.proxyPort)")
+                        Button("Check my IP") {
+                            Task { await ipMask.checkIP() }
+                        }
+                        if let check = ipMask.lastCheck {
+                            Text(check)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        Button("Log out of Mullvad", role: .destructive) {
+                            Task { await ipMask.logOut() }
+                        }
+                        .disabled(ipMask.isBusy)
+                    } else {
+                        SecureField("Mullvad account number", text: $mullvadAccount)
+                            .keyboardType(.numberPad)
+                        Button(ipMask.isBusy ? "Logging in…" : "Log in") {
+                            Task {
+                                do {
+                                    try await ipMask.logIn(accountNumber: mullvadAccount)
+                                    mullvadAccount = ""
+                                    mullvadError = nil
+                                } catch {
+                                    mullvadError = error.localizedDescription
+                                }
+                            }
+                        }
+                        .disabled(ipMask.isBusy || mullvadAccount.isEmpty)
+                    }
+                    if let mullvadError {
+                        Text(mullvadError)
+                            .font(.footnote)
+                            .foregroundStyle(LocusTheme.statusBad)
+                    }
+                } header: {
+                    Text("IP masking (Mullvad)")
+                } footer: {
+                    Text("Routes traffic through the Mullvad server nearest your spoofed location, switching when you teleport near a different city. Then set Settings › Wi‑Fi › (i) › Configure Proxy › Manual: Server 127.0.0.1, Port \(IPMask.proxyPort). Covers normal app and web traffic on Wi‑Fi only — calls, some games and cellular use your real IP. Keep Locus running: if it's closed, Wi‑Fi browsing stops until you reopen it or turn the proxy off.")
+                }
+
                 Section("Privacy") {
-                    Text("Fully on-device. Favorites and recents stay in UserDefaults. No analytics, no accounts, nothing uploaded.")
+                    Text("Fully on-device. Favorites and recents stay in UserDefaults. No analytics. Locus only contacts Mullvad (login, server list) if you turn on IP masking.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -178,6 +239,24 @@ struct SettingsView: View {
                     localDevVPNInstalled = LocalDevVPN.isInstalled
                 }
             }
+        }
+    }
+
+    private var ipMaskStatus: String {
+        switch ipMask.state {
+        case .off: return "Off"
+        case .connecting: return "Connecting…"
+        case .connected: return "Connected"
+        case .failed(let message): return message
+        }
+    }
+
+    private var ipMaskColor: Color {
+        switch ipMask.state {
+        case .off: return .secondary
+        case .connecting: return LocusTheme.statusWarn
+        case .connected: return LocusTheme.statusGood
+        case .failed: return LocusTheme.statusBad
         }
     }
 

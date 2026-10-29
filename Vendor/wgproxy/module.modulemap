@@ -1,0 +1,5 @@
+module wgproxy {
+    header "wgproxy.h"
+    link "wgproxy"
+    export *
+}

@@ -12,3 +12,5 @@ Payload/
 Vendor/idevice/libidevice_ffi.a
 Vendor/idevice/idevice.h
 Vendor/idevice/BUILT_COMMIT
+Vendor/wgproxy/libwgproxy.a
+Vendor/wgproxy/libwgproxy.h
