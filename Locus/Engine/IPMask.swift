@@ -4,10 +4,13 @@ import Foundation
 import wgproxy
 
 /// Keeps the public IP near the spoofed location: runs a userspace WireGuard
-/// tunnel to the Mullvad relay closest to the current (spoofed) coordinate and
+/// tunnel to the server closest to the current (spoofed) coordinate and
 /// exposes it as an HTTP proxy on 127.0.0.1:`proxyPort`. Point Settings ›
-/// Wi‑Fi › Configure Proxy at it. Teleports that land nearer a different
-/// Mullvad city switch the server automatically.
+/// Wi‑Fi › Configure Proxy at it.
+///
+/// Providers:
+/// - Mullvad: account login; nearest city from Mullvad's public relay list.
+/// - Proton VPN / WireGuard file: imported `.conf` files; nearest import wins.
 @MainActor
 final class IPMask: ObservableObject {
     static let shared = IPMask()
@@ -20,9 +23,26 @@ final class IPMask: ObservableObject {
         case failed(String)
     }
 
+    /// A concrete server to connect to, whichever provider it came from.
+    struct Target: Equatable {
+        /// Same key = no reconnect needed (Mullvad: city; imports: profile id).
+        let groupKey: String
+        let serverName: String
+        let place: String
+        let distanceKm: Double?
+        let privateKey: String
+        let address: String
+        let dns: String
+        let publicKey: String
+        let presharedKey: String?
+        let endpoint: String
+    }
+
     @Published private(set) var state: State = .off
     @Published private(set) var enabled: Bool
-    @Published private(set) var choice: MullvadAPI.Choice?
+    @Published private(set) var provider: VPNProvider
+    @Published private(set) var target: Target?
+    @Published private(set) var profiles: [WireGuardProfile]
     @Published private(set) var deviceName: String?
     @Published private(set) var isBusy = false
     @Published private(set) var lastCheck: String?
@@ -34,6 +54,7 @@ final class IPMask: ObservableObject {
         static let deviceName = "mullvad.deviceName"
         static let address = "mullvad.address"
         static let enabled = "ipmask.enabled"
+        static let provider = "ipmask.provider"
         static let lastLatitude = "ipmask.lastLatitude"
         static let lastLongitude = "ipmask.lastLongitude"
     }
@@ -46,7 +67,9 @@ final class IPMask: ObservableObject {
 
     private init() {
         enabled = defaults.bool(forKey: Keys.enabled)
+        provider = defaults.string(forKey: Keys.provider).flatMap(VPNProvider.init(rawValue:)) ?? .mullvad
         deviceName = defaults.string(forKey: Keys.deviceName)
+        profiles = WireGuardProfileStore.load()
     }
 
     var isLoggedIn: Bool {
@@ -55,9 +78,18 @@ final class IPMask: ObservableObject {
             && defaults.string(forKey: Keys.address) != nil
     }
 
+    /// Whether the selected provider has what it needs to connect.
+    var isReady: Bool {
+        provider == .mullvad ? isLoggedIn : !profiles(for: provider).isEmpty
+    }
+
     /// Last four digits, for display.
     var maskedAccount: String? {
         Keychain.string(Keys.account).map { "•••• " + String($0.suffix(4)) }
+    }
+
+    func profiles(for provider: VPNProvider) -> [WireGuardProfile] {
+        profiles.filter { $0.provider == provider }
     }
 
     private var lastCoordinate: CLLocationCoordinate2D? {
@@ -68,7 +100,23 @@ final class IPMask: ObservableObject {
         )
     }
 
-    // MARK: Account
+    // MARK: Provider
+
+    func setProvider(_ newValue: VPNProvider) {
+        guard newValue != provider else { return }
+        provider = newValue
+        defaults.set(newValue.rawValue, forKey: Keys.provider)
+        lastCheck = nil
+        guard enabled else { return }
+        if isReady, let coordinate = lastCoordinate {
+            connectNearest(to: coordinate, force: true)
+        } else {
+            stopTunnel()
+            state = .failed(provider == .mullvad ? "Log in to Mullvad first." : "Import a \(provider.title) config first.")
+        }
+    }
+
+    // MARK: Mullvad account
 
     func logIn(accountNumber: String) async throws {
         let digits = accountNumber.filter(\.isNumber)
@@ -94,7 +142,9 @@ final class IPMask: ObservableObject {
 
     /// Removes this device from the Mullvad account (frees one of the 5 slots).
     func logOut() async {
-        setEnabled(false, near: nil)
+        if provider == .mullvad {
+            setEnabled(false, near: nil)
+        }
         isBusy = true
         defer { isBusy = false }
         if let account = Keychain.string(Keys.account), let id = defaults.string(forKey: Keys.deviceID),
@@ -109,6 +159,54 @@ final class IPMask: ObservableObject {
         deviceName = nil
         lastCheck = nil
         objectWillChange.send()
+    }
+
+    // MARK: Imported configs (Proton / WireGuard file)
+
+    /// Parses a `.conf`, guesses + geocodes its location, and stores it.
+    @discardableResult
+    func importConfig(_ text: String, fileName: String, provider: VPNProvider) async throws -> WireGuardProfile {
+        let stem = (fileName as NSString).deletingPathExtension
+        var profile = try WireGuardConfigParser.parse(text, fallbackName: stem.isEmpty ? "WireGuard" : stem, provider: provider)
+        if !profile.locationLabel.isEmpty, let coordinate = await Self.geocode(profile.locationLabel) {
+            profile.latitude = coordinate.latitude
+            profile.longitude = coordinate.longitude
+        }
+        profiles.append(profile)
+        WireGuardProfileStore.save(profiles)
+        return profile
+    }
+
+    /// Sets where a config exits (e.g. "Pittsburgh, PA"). Returns false if it
+    /// couldn't be found on the map.
+    func setLocation(_ label: String, for id: WireGuardProfile.ID) async -> Bool {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let coordinate = trimmed.isEmpty ? nil : await Self.geocode(trimmed)
+        // Re-find after the await: the list may have changed meanwhile.
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return false }
+        profiles[index].locationLabel = trimmed
+        profiles[index].latitude = coordinate?.latitude
+        profiles[index].longitude = coordinate?.longitude
+        WireGuardProfileStore.save(profiles)
+        return coordinate != nil
+    }
+
+    func deleteProfile(_ id: WireGuardProfile.ID) {
+        profiles.removeAll { $0.id == id }
+        WireGuardProfileStore.save(profiles)
+        if target?.groupKey == "profile:\(id)", enabled {
+            if isReady, let coordinate = lastCoordinate {
+                connectNearest(to: coordinate, force: true)
+            } else {
+                stopTunnel()
+                state = .failed("Import a \(provider.title) config first.")
+            }
+        }
+    }
+
+    private static func geocode(_ place: String) async -> CLLocationCoordinate2D? {
+        let placemarks = try? await CLGeocoder().geocodeAddressString(place)
+        return placemarks?.first?.location?.coordinate
     }
 
     // MARK: Tunnel
@@ -126,23 +224,21 @@ final class IPMask: ObservableObject {
         } else {
             followTask?.cancel()
             followTask = nil
-            Self.stopTunnel()
-            tunnelRunning = false
-            choice = nil
+            stopTunnel()
             state = .off
         }
     }
 
     /// Reconnect at launch so the Wi‑Fi proxy isn't left pointing at nothing.
     func resumeAtLaunch() {
-        guard enabled, isLoggedIn, let target = lastCoordinate else { return }
+        guard enabled, isReady, let target = lastCoordinate else { return }
         connectNearest(to: target, force: true)
     }
 
-    /// Called on every successful spoof update. Cheap when the nearest city is unchanged.
+    /// Called on every successful spoof update. Cheap when the nearest server is unchanged.
     func follow(_ coordinate: CLLocationCoordinate2D) {
         remember(coordinate)
-        guard enabled, isLoggedIn else { return }
+        guard enabled, isReady else { return }
         connectNearest(to: coordinate, force: false)
     }
 
@@ -151,50 +247,66 @@ final class IPMask: ObservableObject {
         defaults.set(coordinate.longitude, forKey: Keys.lastLongitude)
     }
 
+    private func stopTunnel() {
+        Self.stopTunnelFFI()
+        tunnelRunning = false
+        target = nil
+    }
+
     private func connectNearest(to coordinate: CLLocationCoordinate2D, force: Bool) {
-        // Joystick/route updates arrive several times a second; one lookup at a time.
-        guard followTask == nil else { return }
+        // Joystick/route updates arrive several times a second; one lookup at a
+        // time. A forced connect (toggle, provider change) replaces a running one.
+        if force {
+            followTask?.cancel()
+        } else if followTask != nil {
+            return
+        }
         followTask = Task { [weak self] in
             await self?.runConnect(to: coordinate, force: force)
-            self?.followTask = nil
+            if !Task.isCancelled { self?.followTask = nil }
         }
     }
 
     private func runConnect(to coordinate: CLLocationCoordinate2D, force: Bool) async {
-        guard let privateKey = Keychain.string(Keys.privateKey),
-              let address = defaults.string(forKey: Keys.address) else {
-            state = .failed("Log in to Mullvad first.")
-            return
-        }
-        let list: MullvadAPI.RelayList
+        let next: Target
         do {
-            list = try await relayList()
+            next = try await nearestTarget(to: coordinate)
         } catch {
-            state = .failed("Couldn't load Mullvad servers: \(error.localizedDescription)")
+            state = .failed(error.localizedDescription)
             return
         }
-        guard let pick = MullvadAPI.nearest(to: coordinate, in: list) else {
-            state = .failed("No active Mullvad WireGuard servers found.")
+        if Task.isCancelled { return }
+        if !force, tunnelRunning, next.groupKey == target?.groupKey {
             return
         }
-        if !force, tunnelRunning, pick.city == choice?.city, pick.country == choice?.country {
+
+        let endpoint: String
+        if let resolved = await Task.detached(operation: { Self.resolveEndpoint(next.endpoint) }).value {
+            endpoint = resolved
+        } else {
+            state = .failed("Couldn't resolve server address \(next.endpoint).")
             return
         }
 
         state = .connecting
-        choice = pick
-        let peer: [String: Any] = ["public_key": pick.publicKey, "endpoint": pick.endpoint]
+        let previous = target
+        target = next
+        var peer: [String: Any] = ["public_key": next.publicKey, "endpoint": endpoint]
+        if let psk = next.presharedKey { peer["preshared_key"] = psk }
         let config: [String: Any] = [
-            "private_key": privateKey,
-            "address": address,
-            "dns": list.wireguard.ipv4_gateway,
+            "private_key": next.privateKey,
+            "address": next.address,
+            "dns": next.dns,
             "mtu": 1280,
             "listen": "127.0.0.1:\(Self.proxyPort)",
             "peer": peer,
         ]
-        let reuse = tunnelRunning
+        // Same identity (e.g. Mullvad city change) → just swap the peer.
+        let swapPeer = tunnelRunning && previous.map {
+            $0.privateKey == next.privateKey && $0.address == next.address && $0.dns == next.dns
+        } == true
         let error = await Task.detached {
-            reuse ? Self.setPeer(peer) : Self.startTunnel(config)
+            swapPeer ? Self.setPeerFFI(peer) : Self.startTunnelFFI(config)
         }.value
         if let error {
             tunnelRunning = false
@@ -202,18 +314,75 @@ final class IPMask: ObservableObject {
             return
         }
         tunnelRunning = true
-        NSLog("[Locus] IP mask → %@ (%@, %.0f km)", pick.hostname, pick.city, pick.distanceKm)
+        NSLog("[Locus] IP mask (%@) → %@ (%@)", provider.title, next.serverName, next.place)
 
         // A fresh handshake proves the server accepted our key.
+        let startedAt = Int(Date().timeIntervalSince1970) - 1
         for _ in 0..<20 {
             try? await Task.sleep(nanoseconds: 500_000_000)
             if Task.isCancelled { return }
-            if Self.lastHandshake() > 0 {
+            if Self.lastHandshake() >= startedAt {
                 state = .connected
                 return
             }
         }
-        state = .failed("No reply from \(pick.hostname). Check the Mullvad account has time left.")
+        state = .failed("No reply from \(next.serverName). Check the account is active and the config is current.")
+    }
+
+    private func nearestTarget(to coordinate: CLLocationCoordinate2D) async throws -> Target {
+        switch provider {
+        case .mullvad:
+            guard let privateKey = Keychain.string(Keys.privateKey),
+                  let address = defaults.string(forKey: Keys.address) else {
+                throw MullvadAPI.APIError.server("Log in to Mullvad first.")
+            }
+            let list: MullvadAPI.RelayList
+            do {
+                list = try await relayList()
+            } catch {
+                throw MullvadAPI.APIError.server("Couldn't load Mullvad servers: \(error.localizedDescription)")
+            }
+            guard let pick = MullvadAPI.nearest(to: coordinate, in: list) else {
+                throw MullvadAPI.APIError.server("No active Mullvad WireGuard servers found.")
+            }
+            return Target(
+                groupKey: "mullvad:\(pick.country)/\(pick.city)",
+                serverName: pick.hostname,
+                place: pick.city,
+                distanceKm: pick.distanceKm,
+                privateKey: privateKey,
+                address: address,
+                dns: list.wireguard.ipv4_gateway,
+                publicKey: pick.publicKey,
+                presharedKey: nil,
+                endpoint: pick.endpoint
+            )
+
+        case .proton, .custom:
+            let candidates = profiles(for: provider)
+            guard !candidates.isEmpty else {
+                throw MullvadAPI.APIError.server("Import a \(provider.title) config first.")
+            }
+            let here = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            let located = candidates.compactMap { profile -> (WireGuardProfile, Double)? in
+                guard let c = profile.coordinate else { return nil }
+                return (profile, here.distance(from: CLLocation(latitude: c.latitude, longitude: c.longitude)))
+            }
+            // Configs without a known location are only used if none have one.
+            let (profile, meters) = located.min { $0.1 < $1.1 } ?? (candidates[0], -1)
+            return Target(
+                groupKey: "profile:\(profile.id)",
+                serverName: profile.name,
+                place: profile.locationLabel.isEmpty ? "Unknown location" : profile.locationLabel,
+                distanceKm: meters >= 0 ? meters / 1000 : nil,
+                privateKey: profile.privateKey,
+                address: profile.address,
+                dns: profile.dns,
+                publicKey: profile.peerPublicKey,
+                presharedKey: profile.presharedKey,
+                endpoint: profile.endpoint
+            )
+        }
     }
 
     private func relayList() async throws -> MullvadAPI.RelayList {
@@ -241,7 +410,8 @@ final class IPMask: ObservableObject {
 
     // MARK: Leak check
 
-    /// Asks Mullvad's checker, through our own proxy, which IP the world sees.
+    /// Asks am.i.mullvad.net (works for any exit IP), through our own proxy,
+    /// which IP and place the world sees.
     func checkIP() async {
         let config = URLSessionConfiguration.ephemeral
         config.connectionProxyDictionary = [
@@ -260,15 +430,49 @@ final class IPMask: ObservableObject {
                 .data(from: URL(string: "https://am.i.mullvad.net/json")!)
             let answer = try JSONDecoder().decode(Answer.self, from: data)
             let place = [answer.city, answer.country].compactMap { $0 }.joined(separator: ", ")
-            lastCheck = answer.mullvad_exit_ip
-                ? "Mullvad exit \(answer.ip) · \(place)"
-                : "Not through Mullvad: \(answer.ip) · \(place)"
+            if provider == .mullvad {
+                lastCheck = answer.mullvad_exit_ip
+                    ? "Mullvad exit \(answer.ip) · \(place)"
+                    : "Not through Mullvad: \(answer.ip) · \(place)"
+            } else {
+                lastCheck = "Exit IP \(answer.ip) · \(place)"
+            }
         } catch {
             lastCheck = "Proxy check failed: \(error.localizedDescription)"
         }
     }
 
     // MARK: wgproxy FFI
+
+    /// wireguard-go needs an IP endpoint; resolve hostnames from custom configs.
+    nonisolated private static func resolveEndpoint(_ endpoint: String) -> String? {
+        let host: String
+        let port: String
+        if endpoint.hasPrefix("["), let close = endpoint.firstIndex(of: "]") {
+            host = String(endpoint[endpoint.index(after: endpoint.startIndex)..<close])
+            port = String(endpoint[endpoint.index(after: close)...].dropFirst())
+        } else if let colon = endpoint.lastIndex(of: ":") {
+            host = String(endpoint[..<colon])
+            port = String(endpoint[endpoint.index(after: colon)...])
+        } else {
+            return nil
+        }
+        guard !host.isEmpty, UInt16(port) != nil else { return nil }
+        if TunnelConfig.isValidIPv4(host) { return "\(host):\(port)" }
+        if host.contains(":") { return "[\(host)]:\(port)" }
+
+        var hints = addrinfo()
+        hints.ai_family = AF_INET
+        hints.ai_socktype = SOCK_DGRAM
+        var result: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else { return nil }
+        defer { freeaddrinfo(result) }
+        var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        guard getnameinfo(first.pointee.ai_addr, first.pointee.ai_addrlen, &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 else {
+            return nil
+        }
+        return "\(String(cString: buffer)):\(port)"
+    }
 
     nonisolated private static func json(_ object: [String: Any]) -> String {
         let data = (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
@@ -281,15 +485,15 @@ final class IPMask: ObservableObject {
         return String(cString: result)
     }
 
-    nonisolated private static func startTunnel(_ config: [String: Any]) -> String? {
+    nonisolated private static func startTunnelFFI(_ config: [String: Any]) -> String? {
         consume(LocusWGStart(json(config)))
     }
 
-    nonisolated private static func setPeer(_ peer: [String: Any]) -> String? {
+    nonisolated private static func setPeerFFI(_ peer: [String: Any]) -> String? {
         consume(LocusWGSetPeer(json(peer)))
     }
 
-    nonisolated private static func stopTunnel() {
+    nonisolated private static func stopTunnelFFI() {
         LocusWGStop()
     }
 

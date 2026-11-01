@@ -16,6 +16,7 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - Walk/Drive routing on real roads & footpaths (MapKit)
 - Draw a path or import / export GPX
 - Background keep-alive + live status bar + drop alerts
+- IP masking that follows your spoof: Mullvad (account login, nearest server picked automatically), Proton VPN or any WireGuard `.conf` — runs in-app as a local Wi‑Fi proxy, no second VPN needed
 - Favorites & recents
 - First-run setup walkthrough
 - Fully on-device — no analytics, nothing uploaded
