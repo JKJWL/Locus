@@ -4,7 +4,10 @@ import UIKit
 
 /// Reliable pairing-file picker. SwiftUI `fileImporter` often shows `.plist` files
 /// that can’t be selected (especially inside sheets / on iOS 18–26).
+/// Also used for WireGuard `.conf` imports (`types` + `allowsMultiple`).
 struct PairingDocumentPicker: UIViewControllerRepresentable {
+    var types: [UTType] = PairingStore.supportedTypes
+    var allowsMultiple = false
     var onPick: (URL) -> Void
     var onCancel: (() -> Void)?
 
@@ -14,11 +17,11 @@ struct PairingDocumentPicker: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let picker = UIDocumentPickerViewController(
-            forOpeningContentTypes: PairingStore.supportedTypes,
+            forOpeningContentTypes: types,
             asCopy: true
         )
         picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = false
+        picker.allowsMultipleSelection = allowsMultiple
         picker.shouldShowFileExtensions = true
         return picker
     }
@@ -35,11 +38,11 @@ struct PairingDocumentPicker: UIViewControllerRepresentable {
         }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            guard let url = urls.first else {
+            guard !urls.isEmpty else {
                 onCancel?()
                 return
             }
-            onPick(url)
+            urls.forEach(onPick)
         }
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {

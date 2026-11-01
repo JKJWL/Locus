@@ -35,8 +35,9 @@ import (
 )
 
 type peerConfig struct {
-	PublicKey string `json:"public_key"` // base64
-	Endpoint  string `json:"endpoint"`   // "ip:port"
+	PublicKey    string `json:"public_key"`              // base64
+	PresharedKey string `json:"preshared_key,omitempty"` // base64, optional
+	Endpoint     string `json:"endpoint"`                // "ip:port"
 }
 
 type config struct {
@@ -80,8 +81,17 @@ func peerUAPI(p peerConfig) (string, error) {
 	if _, err := netip.ParseAddrPort(p.Endpoint); err != nil {
 		return "", fmt.Errorf("peer endpoint: %w", err)
 	}
+	psk := ""
+	if p.PresharedKey != "" {
+		h, err := keyHex(p.PresharedKey)
+		if err != nil {
+			return "", fmt.Errorf("preshared key: %w", err)
+		}
+		psk = "preshared_key=" + h + "\n"
+	}
 	return "replace_peers=true\n" +
 		"public_key=" + pub + "\n" +
+		psk +
 		"endpoint=" + p.Endpoint + "\n" +
 		"persistent_keepalive_interval=25\n" +
 		"allowed_ip=0.0.0.0/0\n" +
